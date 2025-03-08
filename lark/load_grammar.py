@@ -9,7 +9,7 @@ from copy import copy, deepcopy
 import pkgutil
 from ast import literal_eval
 from contextlib import suppress
-from typing import List, Tuple, Union, Callable, Dict, Optional, Sequence, Generator
+from typing import List, Tuple, Union, Callable, Dict, Optional, Sequence, Generator, cast
 
 from .utils import bfs, logger, classify_bool, is_id_continue, is_id_start, bfs_all_unique, small_factors, OrderedSet
 from .lexer import Token, TerminalDef, PatternStr, PatternRE, Pattern
@@ -103,13 +103,14 @@ TERMINALS = {
     '_DECLARE': r'%declare',
     '_EXTEND': r'%extend',
     '_IMPORT': r'%import',
+    '_USE': r'%use',
     'NUMBER': r'[+-]?\d+',
 }
 
 RULES = {
     'start': ['_list'],
     '_list':  ['_item', '_list _item'],
-    '_item':  ['rule', 'term', 'ignore', 'import', 'declare', 'override', 'extend', '_NL'],
+    '_item':  ['rule', 'term', 'ignore', 'import', 'use', 'declare', 'override', 'extend', '_NL'],
 
     'rule': ['rule_modifiers RULE template_params priority _COLON expansions _NL'],
     'rule_modifiers': ['RULE_MODIFIERS',
@@ -170,6 +171,10 @@ RULES = {
     'import': ['_IMPORT _import_path _NL',
                '_IMPORT _import_path _LPAR name_list _RPAR _NL',
                '_IMPORT _import_path _TO name _NL'],
+
+    'use': ['_USE _import_path _NL',
+               '_USE _import_path _LPAR name_list _RPAR _NL',
+               '_USE _import_path _TO name _NL'],
 
     '_import_path': ['import_lib', 'import_rel'],
     'import_lib': ['_import_args'],
@@ -1188,6 +1193,7 @@ class GrammarBuilder:
             dotted_path = tuple(path_node.children)
             names = arg1.children
             aliases = dict(zip(names, names))  # Can't have aliased multi import, so all aliases will be the same as names
+            is_aliased = False
         else:  # Single import
             dotted_path = tuple(path_node.children[:-1])
             if not dotted_path:
@@ -1195,6 +1201,7 @@ class GrammarBuilder:
                 raise GrammarError("Nothing was imported from grammar `%s`" % name)
             name = path_node.children[-1]  # Get name from dotted path
             aliases = {name.value: (arg1 or name).value}  # Aliases if exist
+            is_aliased = arg1 is not None
 
         if path_node.data == 'import_lib':  # Import from library
             base_path = None
@@ -1214,9 +1221,16 @@ class GrammarBuilder:
             else:
                 base_path = os.path.abspath(os.path.curdir)
 
-        return dotted_path, base_path, aliases
+        return dotted_path, base_path, aliases, is_aliased
 
-    def _unpack_definition(self, tree, mangle):
+    def _unpack_definition(self, tree, mangle, use_aliases: Dict[str, str]):
+        def resolve_symbol(symbol: str) -> str:
+            if use_aliases.get(symbol) is not None:
+                return use_aliases[symbol]
+            elif mangle is not None:
+                return mangle(symbol)
+            else:
+                return symbol
 
         if tree.data == 'rule':
             name, params, exp, opts = _make_rule_tuple(*tree.children)
@@ -1228,41 +1242,65 @@ class GrammarBuilder:
             exp = tree.children[-1]
             is_term = True
 
+        if name in use_aliases:
+            self._grammar_error(is_term, "{Type} '{name}' defined more than once", name)
+
         if mangle is not None:
             params = tuple(mangle(p) for p in params)
             name = mangle(name)
 
-        exp = _mangle_definition_tree(exp, mangle)
+        exp = _mangle_definition_tree(exp, resolve_symbol)
         return name, is_term, exp, params, opts
 
 
     def load_grammar(self, grammar_text: str, grammar_name: str="<?>", mangle: Optional[Callable[[str], str]]=None) -> None:
         tree = _parse_grammar(grammar_text, grammar_name)
 
-        imports: Dict[Tuple[str, ...], Tuple[Optional[str], Dict[str, str]]] = {}
+        global_use_aliases: Dict[str, str] = {}
+        imports: Dict[Tuple[str, ...], Tuple[Optional[str], Dict[str, str], Optional[Dict[str, str]]]] = {}
 
         for stmt in tree.children:
-            if stmt.data == 'import':
-                dotted_path, base_path, aliases = self._unpack_import(stmt, grammar_name)
+            if stmt.data in ('import', 'use'):
+                dotted_path, base_path, aliases, is_aliased = self._unpack_import(stmt, grammar_name)
+                use_aliases: Optional[Dict[str, str]]
                 try:
-                    import_base_path, import_aliases = imports[dotted_path]
-                    assert base_path == import_base_path, 'Inconsistent base_path for %s.' % '.'.join(dotted_path)
+                    import_base_path, import_aliases, use_aliases = imports[dotted_path]
+                    if (
+                        use_aliases is not None and stmt.data == 'import'
+                        or
+                        use_aliases is None and stmt.data == 'use'
+                    ):
+                        raise GrammarError(f'Cannot mix `%import` and `%use` statements')
+                    use_aliases = cast(Dict[str, str], use_aliases)
                     import_aliases.update(aliases)
+                    if stmt.data == 'use' and not is_aliased:
+                        for k, v in import_aliases.items():
+                            use_aliases[v] = f"{'__'.join(dotted_path)}__{k}"
+                            import_aliases[k] = f"{'__'.join(dotted_path)}__{v}"
+                    assert base_path == import_base_path, 'Inconsistent base_path for %s.' % '.'.join(dotted_path)
                 except KeyError:
-                    imports[dotted_path] = base_path, aliases
+                    use_aliases = cast(Dict[str, str], {} if stmt.data == 'use' else None)
+                    if stmt.data == 'use' and not is_aliased:
+                        for k, v in aliases.items():
+                            if v in use_aliases:
+                                continue
+                            use_aliases[v] = f"{'__'.join(dotted_path)}__{k}"
+                            aliases[k] = f"{'__'.join(dotted_path)}__{v}"
+                    imports[dotted_path] = base_path, aliases, use_aliases
 
-        for dotted_path, (base_path, aliases) in imports.items():
+        for dotted_path, (base_path, aliases, use_aliases) in imports.items():
+            global_use_aliases.update(use_aliases if use_aliases else {})
             self.do_import(dotted_path, base_path, aliases, mangle)
 
         for stmt in tree.children:
             if stmt.data in ('term', 'rule'):
-                self._define(*self._unpack_definition(stmt, mangle))
+                self._define(*self._unpack_definition(stmt, mangle, global_use_aliases))
             elif stmt.data == 'override':
                 r ,= stmt.children
-                self._define(*self._unpack_definition(r, mangle), override=True)
+                self._define(*self._unpack_definition(r, mangle, global_use_aliases), override=True)
             elif stmt.data == 'extend':
                 r ,= stmt.children
-                self._extend(*self._unpack_definition(r, mangle))
+                self._extend(*self._unpack_definition(r, mangle, global_use_aliases))
             elif stmt.data == 'ignore':
                 # if mangle is not None, we shouldn't apply ignore, since we aren't in a toplevel grammar
                 if mangle is None:
@@ -1276,7 +1314,7 @@ class GrammarBuilder:
                     else:
                         name = mangle(symbol.name)
                     self._define(name, is_term, None)
-            elif stmt.data == 'import':
+            elif stmt.data == 'import' or stmt.data == 'use':
                 pass
             else:
                 assert False, stmt

@@ -315,6 +315,40 @@ The rule or terminal can be imported under another name (an alias) with the `->`
 
 Note that `%ignore` directives cannot be imported. Imported rules will abide by the `%ignore` directives declared in the main grammar.
 
+### %use
+
+Imports terminals and rules just as `%import` does, but also puts the imported rule itself in its namespace and automatically aliases it.
+
+Useful for importing rules that this chunk of grammar uses, but does not define a transformer for (isn't responsible for parsing it).
+
+***Note:*** when importing terminals with `%use` or explicitly renaming a rule with `->`, it will act exactly as `%import`, meaning no auto-aliasing will be performed.
+
+**Syntax:**
+```html
+# Same as %import above
+%use <module>.<TERMINAL>
+%use <module>.<rule>
+%use <module>.<TERMINAL> -> <NEWTERMINAL>
+%use <module>.<rule> -> <newrule>
+%use <module> (<TERM1>, <TERM2>, <rule1>, <rule2>)
+```
+
+**Example:**
+```perl
+# a.lark
+hello: "hello"
+
+# b.lark
+%use a.hello
+
+start: hello
+
+# tree will look like:
+#
+# start
+#     a__hello
+```
+
 ### %declare
 
 Declare a terminal without defining it. Useful for plugins.

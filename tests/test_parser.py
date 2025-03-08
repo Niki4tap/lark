@@ -1876,6 +1876,11 @@ def _make_parser_test(LEXER, PARSER):
             x = l.parse('12 elephants')
             self.assertEqual(x.children, ['12', 'elephants'])
 
+        @unittest.skipIf('earley' in PARSER and 'basic' in LEXER, "%use doesn't work with basic lexer and earley parser")
+        def test_use(self):
+            l = _Lark_open('test_use.lark', rel_to=__file__)
+            x = l.parse('ab')
+            self.assertEqual(x.children, [Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Token('grammars__ab__B', 'b')])])
 
         def test_import_rename(self):
             grammar = """
