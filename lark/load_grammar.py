@@ -1026,10 +1026,10 @@ def find_grammar_errors(text: str, start: str='start') -> List[Tuple[UnexpectedI
     return errors
 
 
-def _get_mangle(prefix, aliases, base_mangle=None):
+def _get_mangle(prefix, imports, base_mangle=None):
     def mangle(s):
-        if s in aliases:
-            s = aliases[s]
+        if s in imports:
+            s = imports[s]
         else:
             if s[0] == '_':
                 s = '_%s__%s' % (prefix, s[1:])
@@ -1156,7 +1156,7 @@ class GrammarBuilder:
         assert isinstance(base, Tree) and base.data == 'expansions'
         base.children.insert(0, exp)
 
-    def _ignore(self, exp_or_name):
+    def _ignore(self, exp_or_name, dependency_mangle):
         if isinstance(exp_or_name, str):
             self._ignore_names.append(exp_or_name)
         else:
@@ -1170,14 +1170,14 @@ class GrammarBuilder:
                         item ,= item.children
                         if isinstance(item, Terminal):
                             # Keep terminal name, no need to create a new definition
-                            self._ignore_names.append(item.name)
+                            self._ignore_names.append(dependency_mangle(item.name))
                             return
 
             name = '__IGNORE_%d'% len(self._ignore_names)
             self._ignore_names.append(name)
             self._definitions[name] = Definition(True, t, options=TOKEN_DEFAULT_PRIORITY)
 
-    def _unpack_import(self, stmt, grammar_name):
+    def _unpack_import(self, stmt, grammar_name, mangle: Optional[Callable[[str], str]]):
         if len(stmt.children) > 1:
             path_node, arg1 = stmt.children
         else:
@@ -1186,15 +1186,17 @@ class GrammarBuilder:
 
         if isinstance(arg1, Tree):  # Multi import
             dotted_path = tuple(path_node.children)
+            mangle = _get_mangle('__'.join(dotted_path), {}, mangle)
             names = arg1.children
-            aliases = dict(zip(names, names))  # Can't have aliased multi import, so all aliases will be the same as names
+            imports = dict(zip(names, (mangle(name) for name in names)))  # Can't have aliased multi import, so all import names will just be mangled
         else:  # Single import
             dotted_path = tuple(path_node.children[:-1])
             if not dotted_path:
                 name ,= path_node.children
                 raise GrammarError("Nothing was imported from grammar `%s`" % name)
+            mangle = _get_mangle('__'.join(dotted_path), {}, mangle)
             name = path_node.children[-1]  # Get name from dotted path
-            aliases = {name.value: (arg1 or name).value}  # Aliases if exist
+            imports = {(arg1 if arg1 else name).value: mangle(name.value)} # Alias if any, mangle otherwise
 
         if path_node.data == 'import_lib':  # Import from library
             base_path = None
@@ -1214,9 +1216,9 @@ class GrammarBuilder:
             else:
                 base_path = os.path.abspath(os.path.curdir)
 
-        return dotted_path, base_path, aliases
+        return dotted_path, base_path, imports
 
-    def _unpack_definition(self, tree, mangle):
+    def _unpack_definition(self, tree, mangle, dependency_mangle, imports):
 
         if tree.data == 'rule':
             name, params, exp, opts = _make_rule_tuple(*tree.children)
@@ -1228,45 +1230,55 @@ class GrammarBuilder:
             exp = tree.children[-1]
             is_term = True
 
+        if name in imports:
+            self._grammar_error(is_term, "{Type} '{name}' defined more than once", name)
+
         if mangle is not None:
             params = tuple(mangle(p) for p in params)
             name = mangle(name)
 
-        exp = _mangle_definition_tree(exp, mangle)
+        exp = _mangle_definition_tree(exp, dependency_mangle)
         return name, is_term, exp, params, opts
 
 
     def load_grammar(self, grammar_text: str, grammar_name: str="<?>", mangle: Optional[Callable[[str], str]]=None) -> None:
         tree = _parse_grammar(grammar_text, grammar_name)
 
-        imports: Dict[Tuple[str, ...], Tuple[Optional[str], Dict[str, str]]] = {}
+        imports: Dict[Tuple[str, ...], Optional[str]] = {}
+        local_imports: Dict[str, str] = {}
 
         for stmt in tree.children:
             if stmt.data == 'import':
-                dotted_path, base_path, aliases = self._unpack_import(stmt, grammar_name)
+                dotted_path, base_path, imported_items = self._unpack_import(stmt, grammar_name, mangle)
+                local_imports.update(imported_items)
                 try:
-                    import_base_path, import_aliases = imports[dotted_path]
+                    import_base_path = imports[dotted_path]
                     assert base_path == import_base_path, 'Inconsistent base_path for %s.' % '.'.join(dotted_path)
-                    import_aliases.update(aliases)
                 except KeyError:
-                    imports[dotted_path] = base_path, aliases
+                    imports[dotted_path] = base_path
 
-        for dotted_path, (base_path, aliases) in imports.items():
-            self.do_import(dotted_path, base_path, aliases, mangle)
+        for dotted_path, base_path in imports.items():
+            self.do_import(dotted_path, base_path, local_imports, mangle)
+
+        # if this item was imported, get the imported name (alias or mangled)
+        # if it's local, mangle it, unless we are in the root grammar
+        dependency_mangle = lambda s: local_imports[s] if s in local_imports else (mangle(s) if mangle else s)
 
         for stmt in tree.children:
             if stmt.data in ('term', 'rule'):
-                self._define(*self._unpack_definition(stmt, mangle))
+                self._define(*self._unpack_definition(stmt, mangle, dependency_mangle, local_imports))
             elif stmt.data == 'override':
                 r ,= stmt.children
-                self._define(*self._unpack_definition(r, mangle), override=True)
+                name, is_term, exp, params, options = self._unpack_definition(r, mangle, dependency_mangle, {})
+                name = dependency_mangle(name)
+                self._define(name, is_term, exp, params, options, override=True)
             elif stmt.data == 'extend':
                 r ,= stmt.children
-                self._extend(*self._unpack_definition(r, mangle))
+                self._extend(*self._unpack_definition(r, dependency_mangle, dependency_mangle, {}))
             elif stmt.data == 'ignore':
                 # if mangle is not None, we shouldn't apply ignore, since we aren't in a toplevel grammar
                 if mangle is None:
-                    self._ignore(*stmt.children)
+                    self._ignore(*stmt.children, dependency_mangle)
             elif stmt.data == 'declare':
                 for symbol in stmt.children:
                     assert isinstance(symbol, Symbol), symbol
@@ -1303,9 +1315,9 @@ class GrammarBuilder:
         self._definitions = {k: v for k, v in self._definitions.items() if k in _used}
 
 
-    def do_import(self, dotted_path: Tuple[str, ...], base_path: Optional[str], aliases: Dict[str, str], base_mangle: Optional[Callable[[str], str]]=None) -> None:
+    def do_import(self, dotted_path: Tuple[str, ...], base_path: Optional[str], imports: Dict[str, str], base_mangle: Optional[Callable[[str], str]]) -> None:
         assert dotted_path
-        mangle = _get_mangle('__'.join(dotted_path), aliases, base_mangle)
+        mangle = _get_mangle('__'.join(dotted_path), {}, base_mangle)
         grammar_path = os.path.join(*dotted_path) + EXT
         to_try = self.import_paths + ([base_path] if base_path is not None else []) + [stdlib_loader]
         for source in to_try:
@@ -1326,7 +1338,7 @@ class GrammarBuilder:
 
                 gb = GrammarBuilder(self.global_keep_all_tokens, self.import_paths, self.used_files)
                 gb.load_grammar(text, joined_path, mangle)
-                gb._remove_unused(map(mangle, aliases))
+                gb._remove_unused(imports.values())
                 for name in gb._definitions:
                     if name in self._definitions:
                         raise GrammarError("Cannot import '%s' from '%s': Symbol already defined." % (name, grammar_path))
