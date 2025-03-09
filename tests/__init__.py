@@ -1,0 +1,1 @@
+__import__('sys').modules['unittest.util']._MAX_LENGTH = 999999999

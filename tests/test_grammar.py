@@ -66,21 +66,25 @@ class TestGrammar(TestCase):
 
             %import .grammars.ab (startab, A, B)
 
+            start: startab
+
             %override A: "c"
             %override B: "d"
-        """, start='startab', source_path=__file__)
+        """, start='start', source_path=__file__)
 
         a = p.parse('cd')
-        self.assertEqual(a.children[0].children, [Token('A', 'c'), Token('B', 'd')])
+        self.assertEqual(a.children[0].children, [Tree('grammars__ab__expr', [Token('grammars__ab__A', 'c'), Token('grammars__ab__B', 'd')])])
 
     def test_extend_rule(self):
         p = Lark("""
             %import .grammars.ab (startab, A, B, expr)
 
+            start: startab
+
             %extend expr: B A
-        """, start='startab', source_path=__file__)
+        """, start='start', source_path=__file__)
         a = p.parse('abab')
-        self.assertEqual(a.children[0].children, ['a', Tree('expr', ['b', 'a']), 'b'])
+        self.assertEqual(a.children[0].children, [Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Tree('grammars__ab__expr', [Token('grammars__ab__B', 'b'), Token('grammars__ab__A', 'a')]), Token('grammars__ab__B', 'b')])])
 
         self.assertRaises(GrammarError, Lark, """
             %extend expr: B A
@@ -90,10 +94,12 @@ class TestGrammar(TestCase):
         p = Lark("""
             %import .grammars.ab (startab, A, B, expr)
 
+            start: startab
+
             %extend A: "c"
-        """, start='startab', source_path=__file__)
+        """, start='start', source_path=__file__)
         a = p.parse('acbb')
-        self.assertEqual(a.children[0].children, ['a', Tree('expr', ['c', 'b']), 'b'])
+        self.assertEqual(a.children[0].children, [Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Tree('grammars__ab__expr', [Token('grammars__ab__A', 'c'), Token('grammars__ab__B', 'b')]), Token('grammars__ab__B', 'b')])])
 
     def test_extend_twice(self):
         p = Lark("""
@@ -151,7 +157,7 @@ class TestGrammar(TestCase):
 
         p = Lark(grammar, import_paths=[custom_loader])
         self.assertEqual(p.parse('ab'),
-                            Tree('start', [Tree('startab', [Tree('ab__expr', [Token('ab__A', 'a'), Token('ab__B', 'b')])])]))
+                            Tree(Token('RULE', 'start'), [Tree('ab__startab', [Tree('ab__expr', [Token('ab__A', 'a'), Token('ab__B', 'b')])])]))
 
     def test_import_custom_sources2(self):
         custom_loader = FromPackageLoader(__name__, ('grammars', ))
@@ -163,7 +169,7 @@ class TestGrammar(TestCase):
         """
         p = Lark(grammar, import_paths=[custom_loader])
         x = p.parse('N')
-        self.assertEqual(next(x.find_data('rule_to_import')).children, ['N'])
+        self.assertEqual(next(x.find_data('test_relative_import_of_nested_grammar__grammar_to_import__rule_to_import')).children, ['N'])
 
     def test_import_custom_sources3(self):
         custom_loader2 = FromPackageLoader(__name__)

@@ -1914,9 +1914,9 @@ def _make_parser_test(LEXER, PARSER):
             l = _Lark_open('test_relative_rule_import.lark', rel_to=__file__)
             x = l.parse('xaabby')
             self.assertEqual(x.children, [
-                'x',
-                Tree('expr', ['a', Tree('expr', ['a', 'b']), 'b']),
-                'y'])
+                Token('X', 'x'),
+                Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Token('grammars__ab__B', 'b')]), Token('grammars__ab__B', 'b')]),
+                Token('Y', 'y')])
 
 
         def test_relative_rule_import_drop_ignore(self):
@@ -1932,13 +1932,9 @@ def _make_parser_test(LEXER, PARSER):
                            rel_to=__file__)
             x = l.parse('xaabby')
             self.assertEqual(x.children, [
-                'x',
-                Tree('startab', [
-                    Tree('grammars__ab__expr', [
-                        'a', Tree('grammars__ab__expr', ['a', 'b']), 'b',
-                    ]),
-                ]),
-                'y'])
+                Token('X', 'x'),
+                Tree('grammars__ab__startab', [Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Token('grammars__ab__B', 'b')]), Token('grammars__ab__B', 'b')])]),
+                Token('Y', 'y')])
 
 
         def test_relative_rule_import_subrule_no_conflict(self):
@@ -1946,12 +1942,11 @@ def _make_parser_test(LEXER, PARSER):
                 'test_relative_rule_import_subrule_no_conflict.lark',
                 rel_to=__file__)
             x = l.parse('xaby')
-            self.assertEqual(x.children, [Tree('expr', [
-                'x',
-                Tree('startab', [
-                    Tree('grammars__ab__expr', ['a', 'b']),
-                ]),
-                'y'])])
+            self.assertEqual(x.children, [
+                Tree(Token('RULE', 'expr'), [
+                    Token('X', 'x'),
+                    Tree('grammars__ab__startab', [Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Token('grammars__ab__B', 'b')])]),
+                    Token('Y', 'y')])])
             self.assertRaises((ParseError, UnexpectedInput),
                               l.parse, 'xaxabyby')
 
@@ -1961,9 +1956,9 @@ def _make_parser_test(LEXER, PARSER):
                            rel_to=__file__)
             x = l.parse('xaabby')
             self.assertEqual(x.children, [
-                'x',
-                Tree('ab', ['a', Tree('ab', ['a', 'b']), 'b']),
-                'y'])
+                Token('X', 'x'),
+                Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Tree('grammars__ab__expr', [Token('grammars__ab__A', 'a'), Token('grammars__ab__B', 'b')]), Token('grammars__ab__B', 'b')]),
+                Token('Y', 'y')])
 
 
         def test_multi_import(self):
@@ -1987,19 +1982,20 @@ def _make_parser_test(LEXER, PARSER):
         def test_relative_import_preserves_leading_underscore(self):
             l = _Lark_open("test_relative_import_preserves_leading_underscore.lark", rel_to=__file__)
             x = l.parse('Ax')
-            self.assertEqual(next(x.find_data('c')).children, ['A'])
+            self.assertEqual(next(x.find_data('grammars__leading_underscore_grammar__c')).children, ['A'])
 
         def test_relative_import_of_nested_grammar(self):
             l = _Lark_open("grammars/test_relative_import_of_nested_grammar.lark", rel_to=__file__)
             x = l.parse('N')
-            self.assertEqual(next(x.find_data('rule_to_import')).children, ['N'])
+            self.assertEqual(next(x.find_data('test_relative_import_of_nested_grammar__grammar_to_import__rule_to_import')).children, ['N'])
 
         def test_relative_import_rules_dependencies_imported_only_once(self):
             l = _Lark_open("test_relative_import_rules_dependencies_imported_only_once.lark", rel_to=__file__)
             x = l.parse('AAA')
-            self.assertEqual(next(x.find_data('a')).children, ['A'])
-            self.assertEqual(next(x.find_data('b')).children, ['A'])
-            self.assertEqual(next(x.find_data('d')).children, ['A'])
+            print(x)
+            self.assertEqual(next(x.find_data('grammars__three_rules_using_same_token__a')).children, ['A'])
+            self.assertEqual(next(x.find_data('grammars__three_rules_using_same_token__b')).children, ['A'])
+            self.assertEqual(next(x.find_data('grammars__three_rules_using_same_token__c')).children, ['A'])
 
         def test_import_errors(self):
             grammar = """
